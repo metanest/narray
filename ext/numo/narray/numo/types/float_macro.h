@@ -157,6 +157,144 @@ static inline dtype f_kahan_sum(size_t n, char *p, ssize_t stride)
     return y;
 }
 
+#if __SIZEOF_INT__ == 8
+#  define BUILTIN_SADD64_OVERFLOW(x, y, sum) (__builtin_sadd_overflow((x), (y), (sum)))
+#elif __SIZEOF_LONG__ == 8
+#  define BUILTIN_SADD64_OVERFLOW(x, y, sum) (__builtin_saddl_overflow((x), (y), (sum)))
+#elif __SIZEOF_LONG_LONG__ == 8
+#  define BUILTIN_SADD64_OVERFLOW(x, y, sum) (__builtin_saddll_overflow((x), (y), (sum)))
+#endif
+
+static inline int64_t signed_shift_right(int64_t x, unsigned a)
+{
+    return ( (x < 0) ? (-(-(x+1)>>a)-1) : (x >> a) ) ;
+}
+
+static inline dtype f_accurate_sum(size_t n, char *p, ssize_t stride)
+{
+    size_t i=n;
+    dtype x;
+    int64_t arr[40] = { 0, 0, 0, 0, 0,  0, 0, 0, 0, 0
+                      , 0, 0, 0, 0, 0,  0, 0, 0, 0, 0
+                      , 0, 0, 0, 0, 0,  0, 0, 0, 0, 0
+                      , 0, 0, 0, 0, 0,  0, 0, 0, 0, 0 };
+    for (; i--;) {
+        x = *(dtype *)p;
+        if (x == m_zero) {
+            goto loop_cont;
+        }
+        if (m_isnan(x)) {
+            //TODO
+        }
+        if (m_isinf(x)) {
+            //TODO
+        }
+        {
+            int d;
+            int64_t g, h, *arr_ptr;
+            {
+                int e;
+                double f = frexp(x, &e);
+                if ((d = 1021+e) < 0) {
+                    g = (int64_t)(f * exp2((double)(53+d)));
+                    d = 0;
+                } else {
+                    g = (int64_t)(f * exp2(53.0));
+                }
+            }
+            {
+                unsigned b = (unsigned)(d / 60);
+                arr_ptr = &(arr[b]);
+            }
+            {
+                unsigned c = (unsigned)(d % 60);
+                h = signed_shift_right(g, 60U - c);
+                g <<= c;
+            }
+            if (h != (int64_t)-1) {
+                if (BUILTIN_SADD64_OVERFLOW(*arr_ptr, g & (int64_t)0xfffffffffffffff, arr_ptr)) {
+                    h += (int64_t)16;
+                }
+                g = h;
+                ++arr_ptr;
+            }
+            if (g) {
+                if (g < 0) {
+                    if (BUILTIN_SADD64_OVERFLOW(*arr_ptr, g, arr_ptr)) {
+                        do {
+                            ++arr_ptr;
+                        } while (BUILTIN_SADD64_OVERFLOW(*arr_ptr, (int64_t)-16, arr_ptr));
+                    }
+                } else if (g > 0) {
+                    if (BUILTIN_SADD64_OVERFLOW(*arr_ptr, g, arr_ptr)) {
+                        do {
+                            ++arr_ptr;
+                        } while (BUILTIN_SADD64_OVERFLOW(*arr_ptr, (int64_t)16, arr_ptr));
+                    }
+                }
+            }
+        }
+loop_cont:
+        p += stride;
+    }
+    i = 40;
+    {
+        int neg, r=0, flg2=0, flg1=0;
+        VALUE const denormal_threshold = LL2NUM(0x10000000000000LL);
+        VALUE const threshold_53bits   = LL2NUM(0x1fffffffffffffLL);
+        VALUE const threshold_54bits   = LL2NUM(0x3fffffffffffffLL);
+        VALUE y = INT2FIX(0);
+        for (; i--;) {
+            y = rb_funcall(y, rb_intern("<<"), 1, INT2FIX(60));
+            y = rb_funcall(y, rb_intern("+"), 1, LL2NUM((long long)arr[i]));
+        }
+        if (RTEST(rb_funcall(y, rb_intern("zero?"), 0))) {
+            return 0.0;
+        }
+        if (RTEST(rb_funcall(y, rb_intern("negative?"), 0))) {
+            y = rb_funcall(y, rb_intern("-@"), 0);
+            neg = 1;
+        } else {
+            neg = 0;
+        }
+        while (RTEST(rb_funcall(y, rb_intern("<"), 1, denormal_threshold))) {
+            long long result_ll = NUM2LL(y);
+            double result_d = (double)result_ll;
+            result_d *= exp2((double)(-1074));
+            return ( neg ? (-result_d) : result_d ) ;
+        }
+        while (RTEST(rb_funcall(y, rb_intern("even?"), 0))) {
+            y = rb_funcall(y, rb_intern(">>"), 1, INT2FIX(1));
+            r += 1;
+        }
+        if (RTEST(rb_funcall(y, rb_intern(">"), 1, threshold_53bits))) {
+            while (RTEST(rb_funcall(y, rb_intern(">"), 1, threshold_54bits))) {
+                flg2 = 1;
+                y = rb_funcall(y, rb_intern(">>"), 1, INT2FIX(1));
+                r += 1;
+            }
+            if (RTEST(rb_funcall(y, rb_intern("odd?"), 0))) {
+                flg1 = 1;
+            }
+            y = rb_funcall(y, rb_intern(">>"), 1, INT2FIX(1));
+            r += 1;
+        }
+        if (flg1) {
+            if (RTEST(rb_funcall(y, rb_intern("odd?"), 0)) || flg2) {
+                y = rb_funcall(y, rb_intern("+"), 1, INT2FIX(1));
+            }
+        }
+        {
+            long long result_ll = NUM2LL(y);
+            double result_d = (double)result_ll;
+            result_d *= exp2((double)(-1074+r));
+            return ( neg ? (-result_d) : result_d ) ;
+        }
+    }
+}
+
+#undef BUILTIN_SADD64_OVERFLOW
+
 static inline dtype f_prod(size_t n, char *p, ssize_t stride)
 {
     size_t i=n;
